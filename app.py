@@ -18,30 +18,26 @@ import dash_bootstrap_components as dbc
 app = dash.Dash(__name__, external_stylesheets=[dbc.themes.FLATLY])
 server = app.server
 
-# =============================
-# 1) Lectura de datos
-# =============================
-ruta_dataset = "datos/Mortalidad_General_en_el_departamento_de_Antioquia_desde_2005_20250915.csv"
-ruta_shapefile = "datos/MGN_MPIO_POLITICO.shp"
+# 1. Lectura de datos
+ruta_dataset = "data/Mortalidad_General_en_el_departamento_de_Antioquia_desde_2005_20250915.csv"
+ruta_shapefile = "data/MGN_MPIO_POLITICO.shp"
 
-# Dataset principal
 dataset = pd.read_csv(
     ruta_dataset,
-    dtype={"CodigoMunicipio": "string"}
+    dtype={"CodigoMunicipio": str}
 )
+
+dataset_shapefile = gpd.read_file(ruta_shapefile)
+dataset_shapefile = dataset_shapefile[dataset_shapefile["DPTO_CCDGO"] == "05"]
+dataset_shapefile = dataset_shapefile[["MPIO_CDPMP", "MPIO_CNMBR", "geometry"]].to_crs(epsg=4326)
+
+dataset_final = dataset[["NombreMunicipio", "CodigoMunicipio", "NombreRegion", "Año", "NumeroCasos", "TasaXMilHabitantes"]]
+dataset_final["CodigoMunicipio"] = dataset_final["CodigoMunicipio"].astype(str)
+dataset_shapefile["MPIO_CDPMP"] = dataset_shapefile["MPIO_CDPMP"].astype(str)
+
 # En caso de que 'Año' venga como string, lo normalizamos a numérico
 if dataset["Año"].dtype != "int64" and dataset["Año"].dtype != "float64":
     dataset["Año"] = pd.to_numeric(dataset["Año"], errors="coerce")
-
-# Shapefile (engine='pyogrio' mejora compatibilidad en Render)
-dataset_shapefile = gpd.read_file(ruta_shapefile, engine="pyogrio")
-dataset_shapefile = dataset_shapefile[dataset_shapefile["DPTO_CCDGO"] == "05"]
-dataset_shapefile = dataset_shapefile[["MPIO_CDPMP", "MPIO_CNMBR", "geometry"]].to_crs(epsg=4326)
-dataset_shapefile["MPIO_CDPMP"] = dataset_shapefile["MPIO_CDPMP"].astype("string")
-
-# Seleccionamos columnas relevantes y normalizamos tipos
-dataset_final = dataset[["NombreMunicipio", "CodigoMunicipio", "NombreRegion", "Año", "NumeroCasos", "TasaXMilHabitantes"]].copy()
-dataset_final["CodigoMunicipio"] = dataset_final["CodigoMunicipio"].astype("string")
 
 # Merge geo + datos
 df_merge = dataset_shapefile.merge(
