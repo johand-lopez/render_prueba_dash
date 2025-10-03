@@ -9,6 +9,8 @@ import json
 import numpy as np
 import branca.colormap as cm
 import dash_bootstrap_components as dbc
+import os
+from pathlib import Path
 
 # =============================
 #   Mortalidad en Antioquia – Dash
@@ -18,10 +20,22 @@ import dash_bootstrap_components as dbc
 app = dash.Dash(__name__, external_stylesheets=[dbc.themes.FLATLY])
 server = app.server
 
-# 1. Lectura de datos
-ruta_dataset = "data/Mortalidad_General_en_el_departamento_de_Antioquia_desde_2005_20250915.csv"
-ruta_shapefile = "data/MGN_MPIO_POLITICO.shp"
+# 1. Configuración de rutas con validación
+BASE_DIR = Path(__file__).parent
 
+ruta_dataset = BASE_DIR / "data" / "Mortalidad_General_en_el_departamento_de_Antioquia_desde_2005_20250915.csv"
+ruta_shapefile = BASE_DIR / "data" / "MGN_MPIO_POLITICO.shp"
+
+# Validar que los archivos existan
+if not ruta_dataset.exists():
+    raise FileNotFoundError(f"No se encuentra el dataset: {ruta_dataset}")
+if not ruta_shapefile.exists():
+    raise FileNotFoundError(f"No se encuentra el shapefile: {ruta_shapefile}")
+
+# 2. Carga de datos
+print("Cargando datos...")
+
+# Lectura de datos
 dataset = pd.read_csv(
     ruta_dataset,
     dtype={"CodigoMunicipio": str}
@@ -44,13 +58,18 @@ df_merge = dataset_shapefile.merge(
     dataset_final, left_on="MPIO_CDPMP", right_on="CodigoMunicipio", how="inner"
 )
 
+# Validación y limpieza de datos
+print(f"Registros totales: {len(df_merge)}")
+print(f"Valores nulos en TasaXMilHabitantes: {df_merge['TasaXMilHabitantes'].isna().sum()}")
+print(f"Valores nulos en NumeroCasos: {df_merge['NumeroCasos'].isna().sum()}")
+
+# Limpiar datos problemáticos
+df_merge = df_merge.dropna(subset=['TasaXMilHabitantes', 'NumeroCasos'])
+
 # Lista de años para los dropdowns
 lista_anios = ["Todos los años"] + sorted(df_merge["Año"].dropna().unique().tolist())
 
-# =============================
-# 1.1) Agregados precalculados para "Todos los años"
-# =============================
-# (Mejora de rendimiento: se evita agrupar en cada callback)
+# Agregados precalculados para "Todos los años"
 df_tasa_all = (
     df_merge
     .groupby(["NombreMunicipio", "CodigoMunicipio", "NombreRegion"], as_index=False)
@@ -68,6 +87,8 @@ df_casos_all = (
     .drop(columns=["MPIO_CDPMP"])
 )
 df_casos_all = gpd.GeoDataFrame(df_casos_all, geometry="geometry", crs="EPSG:4326")
+
+print("Datos cargados exitosamente")
 
 # =============================
 #   Layout con Bootstrap
@@ -190,177 +211,218 @@ app.layout = dbc.Container([
 #   Callbacks
 # =============================
 
-# ---- Resumen (lo dejé con tu lógica original; solo podría haberse hecho con describe)
+# ---- Resumen estadístico ----
 @app.callback(
     Output("tabla_summary", "data"),
     Input("tabla_summary", "id")
 )
 def update_summary(_):
-    def resumen(x):
-        return {
-            "Mínimo": x.min(),
-            "1er Cuartil": x.quantile(0.25),
-            "Mediana": x.median(),
-            "Media": x.mean(),
-            "3er Cuartil": x.quantile(0.75),
-            "Máximo": x.max()
-        }
+    try:
+        def resumen(x):
+            return {
+                "Mínimo": x.min(),
+                "1er Cuartil": x.quantile(0.25),
+                "Mediana": x.median(),
+                "Media": x.mean(),
+                "3er Cuartil": x.quantile(0.75),
+                "Máximo": x.max()
+            }
 
-    df = []
-    for col in ["NumeroCasos", "TasaXMilHabitantes"]:
-        stats = resumen(df_merge[col])
-        for k, v in stats.items():
-            df.append({"Variable": col, "Estadistico": k, "Valor": round(float(v), 2)})
-    return df
+        df = []
+        for col in ["NumeroCasos", "TasaXMilHabitantes"]:
+            stats = resumen(df_merge[col])
+            for k, v in stats.items():
+                df.append({"Variable": col, "Estadistico": k, "Valor": round(float(v), 2)})
+        return df
+    except Exception as e:
+        print(f"Error en update_summary: {e}")
+        return [{"Variable": "Error", "Estadistico": "Error", "Valor": str(e)}]
 
 # =============================
 #   Helpers para choropleth
 # =============================
 def _bins_from_values(values, k=7):
-    # Cortes por cuantiles (mejor lectura en distribuciones sesgadas)
-    vals = np.array(values, dtype=float)
-    vals = vals[~np.isnan(vals)]
-    if vals.size == 0:
-        return [0, 1]  # fallback
-    qs = np.linspace(0, 1, k + 1)
-    bins = np.unique(np.quantile(vals, qs))
-    if len(bins) < 4:  # Aseguramos al menos 4 cortes
-        vmin, vmax = float(np.nanmin(vals)), float(np.nanmax(vals))
-        if vmin == vmax:
-            vmax = vmin + 1.0
-        bins = np.linspace(vmin, vmax, 5)
-    return bins.tolist()
+    """Calcula bins usando cuantiles para distribuciones sesgadas"""
+    try:
+        vals = np.array(values, dtype=float)
+        vals = vals[~np.isnan(vals)]
+        if vals.size == 0:
+            return [0, 1]  # fallback
+        qs = np.linspace(0, 1, k + 1)
+        bins = np.unique(np.quantile(vals, qs))
+        if len(bins) < 4:  # Aseguramos al menos 4 cortes
+            vmin, vmax = float(np.nanmin(vals)), float(np.nanmax(vals))
+            if vmin == vmax:
+                vmax = vmin + 1.0
+            bins = np.linspace(vmin, vmax, 5)
+        return bins.tolist()
+    except Exception as e:
+        print(f"Error en _bins_from_values: {e}")
+        return [0, 1, 2, 3, 4, 5]
 
 def _choropleth_from_gdf(gdf, value_col, colorscale_linear):
     """
     Devuelve (layer, colorbar) para un GeoDataFrame 'gdf', mapeando 'value_col'
     con colores discretizados (step) a partir de una escala lineal de 'branca'.
     """
-    # GeoJSON
-    features = json.loads(gdf.to_json())["features"]
-    geojson = {"type": "FeatureCollection", "features": features}
+    try:
+        # GeoJSON
+        features = json.loads(gdf.to_json())["features"]
+        geojson = {"type": "FeatureCollection", "features": features}
 
-    # Bins y escala de color en pasos
-    vals = gdf[value_col].astype(float).to_numpy()
-    bins = _bins_from_values(vals, k=7)
-    step_cmap = colorscale_linear.to_step(n=len(bins)-1)
-    colorscale = step_cmap.colors  # lista de colores hex
+        # Bins y escala de color en pasos
+        vals = gdf[value_col].astype(float).to_numpy()
+        bins = _bins_from_values(vals, k=7)
+        step_cmap = colorscale_linear.to_step(n=len(bins)-1)
+        colorscale = step_cmap.colors  # lista de colores hex
 
-    # Estilos base y hover
-    style = dict(weight=0.8, opacity=1, color="#111111", fillOpacity=0.75)
-    hoverStyle = dict(weight=2, color="#222222", fillOpacity=0.95)
+        # Estilos base y hover
+        style = dict(weight=0.8, opacity=1, color="#111111", fillOpacity=0.75)
+        hoverStyle = dict(weight=2, color="#222222", fillOpacity=0.95)
 
-    # style function generada por dlx (lado JS)
-    style_fn = dlx.choropleth(
-        data=geojson,
-        colorscale=colorscale,
-        classes=bins,
-        color_prop=value_col,
-        style=style,
-        nan_color="#f0f0f0"
-    )
+        # style function generada por dlx (lado JS)
+        style_fn = dlx.choropleth(
+            data=geojson,
+            colorscale=colorscale,
+            classes=bins,
+            color_prop=value_col,
+            style=style,
+            nan_color="#f0f0f0"
+        )
 
-    layer = dl.GeoJSON(
-        data=geojson,
-        options=dict(style=style_fn),
-        hoverStyle=hoverStyle,
-        zoomToBounds=True
-    )
+        layer = dl.GeoJSON(
+            data=geojson,
+            options=dict(style=style_fn),
+            hoverStyle=hoverStyle,
+            zoomToBounds=True
+        )
 
-    colorbar = dl.Colorbar(
-        colorscale=colorscale,
-        width=20, height=180,
-        min=min(bins), max=max(bins)
-    )
-    return layer, colorbar
+        colorbar = dl.Colorbar(
+            colorscale=colorscale,
+            width=20, height=180,
+            min=min(bins), max=max(bins)
+        )
+        return layer, colorbar
+    except Exception as e:
+        print(f"Error en _choropleth_from_gdf: {e}")
+        # Retornar un mapa vacío en caso de error
+        return dl.GeoJSON(data={}), dl.Colorbar(colorscale=["#f0f0f0"], min=0, max=1)
 
-# ---- Mapas (NUEVO: choropleth real con degradé)
+# ---- Mapas ----
 @app.callback(
     Output("mapa_tasa", "children"),
     Input("anio_tasa", "value")
 )
 def update_mapa_tasa(anio):
-    if anio == "Todos los años":
-        gdf = df_tasa_all.copy()
-    else:
-        gdf = df_merge.loc[df_merge["Año"] == anio, ["NombreMunicipio", "CodigoMunicipio", "NombreRegion", "TasaXMilHabitantes", "geometry"]].copy()
-        gdf = gpd.GeoDataFrame(gdf, geometry="geometry", crs="EPSG:4326")
-    gdf = gdf.dropna(subset=["TasaXMilHabitantes"])
+    try:
+        if anio == "Todos los años":
+            gdf = df_tasa_all.copy()
+        else:
+            gdf = df_merge.loc[df_merge["Año"] == anio, ["NombreMunicipio", "CodigoMunicipio", "NombreRegion", "TasaXMilHabitantes", "geometry"]].copy()
+            gdf = gpd.GeoDataFrame(gdf, geometry="geometry", crs="EPSG:4326")
+        
+        if gdf.empty:
+            return html.Div("No hay datos disponibles para el año seleccionado", 
+                           style={"textAlign": "center", "padding": "20px", "fontSize": "18px"})
+            
+        gdf = gdf.dropna(subset=["TasaXMilHabitantes"])
+        layer, cbar = _choropleth_from_gdf(gdf, "TasaXMilHabitantes", cm.linear.YlOrRd_09)
+        cbar.unit = "Tasa por mil"
 
-    layer, cbar = _choropleth_from_gdf(gdf, "TasaXMilHabitantes", cm.linear.YlOrRd_09)
-
-    # Etiqueta de la barra
-    cbar.unit = "Tasa por mil"
-
-    return dl.Map(
-        children=[dl.TileLayer(), layer, cbar],
-        style={"width": "100%", "height": "600px"},
-        center=[6.5, -75.5], zoom=7
-    )
+        return dl.Map(
+            children=[dl.TileLayer(), layer, cbar],
+            style={"width": "100%", "height": "600px"},
+            center=[6.5, -75.5], zoom=7
+        )
+    except Exception as e:
+        return html.Div(f"Error al generar el mapa: {str(e)}", 
+                       style={"textAlign": "center", "padding": "20px", "color": "red"})
 
 @app.callback(
     Output("mapa_casos", "children"),
     Input("anio_casos", "value")
 )
 def update_mapa_casos(anio):
-    if anio == "Todos los años":
-        gdf = df_casos_all.copy()
-    else:
-        gdf = df_merge.loc[df_merge["Año"] == anio, ["NombreMunicipio", "CodigoMunicipio", "NombreRegion", "NumeroCasos", "geometry"]].copy()
-        gdf = gpd.GeoDataFrame(gdf, geometry="geometry", crs="EPSG:4326")
-    gdf = gdf.dropna(subset=["NumeroCasos"])
+    try:
+        if anio == "Todos los años":
+            gdf = df_casos_all.copy()
+        else:
+            gdf = df_merge.loc[df_merge["Año"] == anio, ["NombreMunicipio", "CodigoMunicipio", "NombreRegion", "NumeroCasos", "geometry"]].copy()
+            gdf = gpd.GeoDataFrame(gdf, geometry="geometry", crs="EPSG:4326")
+        
+        if gdf.empty:
+            return html.Div("No hay datos disponibles para el año seleccionado", 
+                           style={"textAlign": "center", "padding": "20px", "fontSize": "18px"})
+            
+        gdf = gdf.dropna(subset=["NumeroCasos"])
+        layer, cbar = _choropleth_from_gdf(gdf, "NumeroCasos", cm.linear.Blues_09)
+        cbar.unit = "Número de casos"
 
-    layer, cbar = _choropleth_from_gdf(gdf, "NumeroCasos", cm.linear.Blues_09)
+        return dl.Map(
+            children=[dl.TileLayer(), layer, cbar],
+            style={"width": "100%", "height": "600px"},
+            center=[6.5, -75.5], zoom=7
+        )
+    except Exception as e:
+        return html.Div(f"Error al generar el mapa: {str(e)}", 
+                       style={"textAlign": "center", "padding": "20px", "color": "red"})
 
-    # Etiqueta de la barra
-    cbar.unit = "Número de casos"
-
-    return dl.Map(
-        children=[dl.TileLayer(), layer, cbar],
-        style={"width": "100%", "height": "600px"},
-        center=[6.5, -75.5], zoom=7
-    )
-
-# ---- Gráficos Top 10 (idénticos a los tuyos)
+# ---- Gráficos Top 10 ----
 @app.callback(
     Output("plot_top10_tasa_alta", "figure"),
     Input("anio_top_tasa_alta", "value")
 )
 def plot_top10_tasa_alta(anio):
-    df = df_merge if anio == "Todos los años" else df_merge[df_merge["Año"] == anio]
-    df = df.groupby("NombreMunicipio")["TasaXMilHabitantes"].mean().nlargest(10).reset_index()
-    return px.bar(df, x="TasaXMilHabitantes", y="NombreMunicipio", orientation="h",
-                  title="Top 10 municipios con mayor tasa de mortalidad", color="TasaXMilHabitantes")
+    try:
+        df = df_merge if anio == "Todos los años" else df_merge[df_merge["Año"] == anio]
+        df = df.groupby("NombreMunicipio")["TasaXMilHabitantes"].mean().nlargest(10).reset_index()
+        return px.bar(df, x="TasaXMilHabitantes", y="NombreMunicipio", orientation="h",
+                      title="Top 10 municipios con mayor tasa de mortalidad", color="TasaXMilHabitantes")
+    except Exception as e:
+        print(f"Error en plot_top10_tasa_alta: {e}")
+        return px.bar(title="Error al generar gráfico")
 
 @app.callback(
     Output("plot_top10_tasa_baja", "figure"),
     Input("anio_top_tasa_baja", "value")
 )
 def plot_top10_tasa_baja(anio):
-    df = df_merge if anio == "Todos los años" else df_merge[df_merge["Año"] == anio]
-    df = df.groupby("NombreMunicipio")["TasaXMilHabitantes"].mean().nsmallest(10).reset_index()
-    return px.bar(df, x="TasaXMilHabitantes", y="NombreMunicipio", orientation="h",
-                  title="Top 10 municipios con menor tasa de mortalidad", color="TasaXMilHabitantes")
+    try:
+        df = df_merge if anio == "Todos los años" else df_merge[df_merge["Año"] == anio]
+        df = df.groupby("NombreMunicipio")["TasaXMilHabitantes"].mean().nsmallest(10).reset_index()
+        return px.bar(df, x="TasaXMilHabitantes", y="NombreMunicipio", orientation="h",
+                      title="Top 10 municipios con menor tasa de mortalidad", color="TasaXMilHabitantes")
+    except Exception as e:
+        print(f"Error en plot_top10_tasa_baja: {e}")
+        return px.bar(title="Error al generar gráfico")
 
 @app.callback(
     Output("plot_top10_casos_alto", "figure"),
     Input("anio_top_casos_alto", "value")
 )
 def plot_top10_casos_alto(anio):
-    df = df_merge if anio == "Todos los años" else df_merge[df_merge["Año"] == anio]
-    df = df.groupby("NombreMunicipio")["NumeroCasos"].sum().nlargest(10).reset_index()
-    return px.bar(df, x="NumeroCasos", y="NombreMunicipio", orientation="h",
-                  title="Top 10 municipios con mayor número de defunciones", color="NumeroCasos")
+    try:
+        df = df_merge if anio == "Todos los años" else df_merge[df_merge["Año"] == anio]
+        df = df.groupby("NombreMunicipio")["NumeroCasos"].sum().nlargest(10).reset_index()
+        return px.bar(df, x="NumeroCasos", y="NombreMunicipio", orientation="h",
+                      title="Top 10 municipios con mayor número de defunciones", color="NumeroCasos")
+    except Exception as e:
+        print(f"Error en plot_top10_casos_alto: {e}")
+        return px.bar(title="Error al generar gráfico")
 
 @app.callback(
     Output("plot_top10_casos_bajo", "figure"),
     Input("anio_top_casos_bajo", "value")
 )
 def plot_top10_casos_bajo(anio):
-    df = df_merge if anio == "Todos los años" else df_merge[df_merge["Año"] == anio]
-    df = df.groupby("NombreMunicipio")["NumeroCasos"].sum().nsmallest(10).reset_index()
-    return px.bar(df, x="NumeroCasos", y="NombreMunicipio", orientation="h",
-                  title="Top 10 municipios con menor número de defunciones", color="NumeroCasos")
+    try:
+        df = df_merge if anio == "Todos los años" else df_merge[df_merge["Año"] == anio]
+        df = df.groupby("NombreMunicipio")["NumeroCasos"].sum().nsmallest(10).reset_index()
+        return px.bar(df, x="NumeroCasos", y="NombreMunicipio", orientation="h",
+                      title="Top 10 municipios con menor número de defunciones", color="NumeroCasos")
+    except Exception as e:
+        print(f"Error en plot_top10_casos_bajo: {e}")
+        return px.bar(title="Error al generar gráfico")
 
 # =============================
 #   Lanzar app
