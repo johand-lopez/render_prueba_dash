@@ -21,8 +21,8 @@ server = app.server
 # =============================
 # 1) Lectura de datos
 # =============================
-ruta_dataset = "data/Mortalidad_General_en_el_departamento_de_Antioquia_desde_2005_20250915.csv"
-ruta_shapefile = "data/MGN_MPIO_POLITICO.shp"
+ruta_dataset = "datos/Mortalidad_General_en_el_departamento_de_Antioquia_desde_2005_20250915.csv"
+ruta_shapefile = "datos/MGN_MPIO_POLITICO.shp"
 
 # Dataset principal
 dataset = pd.read_csv(
